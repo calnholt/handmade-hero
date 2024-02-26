@@ -4,6 +4,7 @@
 #include <dsound.h>
 // TODO: implement sin ourselves
 #include <math.h>
+#include <stdio.h>
 
 #define internal static
 #define local_persist static
@@ -337,7 +338,6 @@ internal void
 Win32FillSoundOutputRegion(VOID *Region, DWORD RegionSize) {
   int16 *SampleOut = (int16 *)Region;
   DWORD RegionSampleCount = RegionSize / GlobalSoundOutput.BytesPerSample;
-  // TODO: collapse these two loops
   for (DWORD SampleIndex = 0; SampleIndex < RegionSampleCount; SampleIndex++) {
     real32 SineValue = sinf(GlobalSoundOutput.tSine);
     real32 SampleValue = (int16)(SineValue * GlobalSoundOutput.ToneVolume);
@@ -371,6 +371,10 @@ WinMain(
   LPSTR CommandLine, 
   int ShowCode
 ) {
+  LARGE_INTEGER PerfCounterFrequencyResult;
+  QueryPerformanceFrequency(&PerfCounterFrequencyResult);
+  int64 PerfCountFrequency = PerfCounterFrequencyResult.QuadPart;
+
   Win32LoadXInput();
   WNDCLASSA WindowClass = {};
   Win32ResizeDIBSection(&GlobalBackBuffer, 1288, 728);
@@ -414,6 +418,11 @@ WinMain(
       Win32InitDSound(Window, GlobalSoundOutput.SamplesPerSecond, GlobalSoundOutput.SecondaryBufferSize);
       Win32FillSoundBuffer(0, GlobalSoundOutput.LatencySampleCount * GlobalSoundOutput.BytesPerSample);
       GlobalSecondaryBuffer->Play(0, 0, DSBPLAY_LOOPING);
+
+      LARGE_INTEGER LastCounter;
+      QueryPerformanceCounter(&LastCounter);
+      uint64 LastCycleCount = __rdtsc();
+      
       while (GlobalRunning) {
         MSG Message;
         while (PeekMessage(&Message, 0, 0, 0, PM_REMOVE)) {
@@ -462,6 +471,7 @@ WinMain(
 
         RenderWeirdGradient(&GlobalBackBuffer, XOffset, YOffset);
         // direct sound output test
+        // TODO: really understand how this works
         DWORD PlayCursor;
         DWORD WriteCursor;
         if (SUCCEEDED(GlobalSecondaryBuffer->GetCurrentPosition(&PlayCursor, &WriteCursor))) {
@@ -489,6 +499,26 @@ WinMain(
         Win32DisplayBufferInWindow(&GlobalBackBuffer, DeviceContext, Dimension.Width, Dimension.Height);
         // TODO: learn what this function does
         ReleaseDC(Window, DeviceContext);
+
+        uint64 EndCycleCount = __rdtsc();
+
+        LARGE_INTEGER EndCounter;
+        QueryPerformanceCounter(&EndCounter);
+
+        uint64 CyclesElapsed = EndCycleCount - LastCycleCount;
+        int64 CounterElapsed = EndCounter.QuadPart - LastCounter.QuadPart;
+        // need to cast all values to floats
+        real64 MSPerFrame = (real64)(((1000.0f * (real64)CounterElapsed) / (real64)PerfCountFrequency));
+        // dimensional analysis
+        real64 FramesPerSecond = (real64)PerfCountFrequency / (real64)CounterElapsed;
+        real64 MegaCyclesPerFrame = (real64)((real64)CyclesElapsed / (1000 * 1000));
+
+        char Buffer[256];
+        sprintf(Buffer, "%.02fms/f, %.02ff/s, %.02fmc/f\n", MSPerFrame, FramesPerSecond, MegaCyclesPerFrame);
+        OutputDebugStringA(Buffer);
+
+        LastCounter = EndCounter;
+        LastCycleCount = EndCycleCount;
       }
     }
     else {
