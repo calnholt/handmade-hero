@@ -1,3 +1,23 @@
+
+/*
+  TODO: this is not a final platform layer!
+  - saved game locations
+  - getting a handle to out own exe file
+  - threading (launch a thread)
+  - raw input (support multiple keyboards)
+  - sleep/timeBeginPeriod
+  - clipCursor() for mulimonitor support
+  - fullscreen support
+  - WM_SETCURSOR (control cursor visibility)
+  - QueryCancelAutoplay
+  - WM_ACTIVEAPP
+  - Blit speed improvements
+  - hardware acceleration (opengel or direct3d or both???)
+  - GetKeyboardLayout (for french keyboards, international WASD support)
+
+  Just a partial list!!!
+*/
+
 #include <windows.h>
 #include <stdint.h>
 #include <Xinput.h>
@@ -24,20 +44,21 @@ typedef int64_t int64;
 typedef int32 bool32;
 
 // IEEE floating point
-
 typedef float real32;
 typedef double real64;
 
-struct win32_ofscreen_buffer {
+#include "handmade.cpp"
+
+struct win32_window_dimension {
+  int Width;
+  int Height;
+};
+struct win32_offscreen_buffer {
   BITMAPINFO Info;
   void *Memory;
   int Width;
   int Height;
   int Pitch;
-};
-struct win32_window_dimension {
-  int Width;
-  int Height;
 };
 struct win32_sound_output {
   int SamplesPerSecond;
@@ -54,7 +75,7 @@ struct win32_sound_output {
 #define X_INPUT_GET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_STATE *pState)
 typedef X_INPUT_GET_STATE(x_input_get_state);
 X_INPUT_GET_STATE(XInputGetStateStub) {
-  return (ERROR_DEVICE_NOT_CONNECTED);
+  return ERROR_DEVICE_NOT_CONNECTED;
 }
 global_variable x_input_get_state *XInputGetState_ = XInputGetStateStub;
 #define XInputGetState XInputGetState_
@@ -62,7 +83,7 @@ global_variable x_input_get_state *XInputGetState_ = XInputGetStateStub;
 #define X_INPUT_SET_STATE(name) DWORD WINAPI name(DWORD dwUserIndex, XINPUT_VIBRATION *pVibration)
 typedef X_INPUT_SET_STATE(x_input_set_state);
 X_INPUT_SET_STATE(XInputSetStateStub) {
-  return (ERROR_DEVICE_NOT_CONNECTED);
+  return ERROR_DEVICE_NOT_CONNECTED;
 }
 global_variable x_input_set_state *XInputSetState_ = XInputSetStateStub;
 #define XInputSetState XInputSetState_
@@ -72,12 +93,12 @@ typedef DIRECT_SOUND_CREATE(direct_sound_create);
 
 // TODO: this is a global for now
 global_variable bool32 GlobalRunning;
-global_variable win32_ofscreen_buffer GlobalBackBuffer;
+global_variable win32_offscreen_buffer GlobalBackBuffer;
 global_variable LPDIRECTSOUNDBUFFER GlobalSecondaryBuffer;
 global_variable win32_sound_output GlobalSoundOutput;
 
 internal void
-Win32LoadXInput(void) {
+Win32LoadXInput() {
   // TODO: test this on windows 8
   HMODULE XInputLibrary = LoadLibraryA("xinput1_4.dll");
   if (!XInputLibrary) {
@@ -165,33 +186,11 @@ Win32GetWindowDimension(HWND Window) {
   GetClientRect(Window, &ClientRect);
   Result.Width = ClientRect.right - ClientRect.left;
   Result.Height = ClientRect.bottom - ClientRect.top;
-  return(Result);
+  return Result;
 }
 
 internal void 
-RenderWeirdGradient(win32_ofscreen_buffer *Buffer, int BlueOffest, int GreenOffset) {
-  uint8 *Row = (uint8 *)Buffer->Memory;  
-  for(int Y = 0; Y < Buffer->Height; ++Y) {
-    uint32 *Pixel = (uint32 *)Row;
-    for(int X = 0; X < Buffer->Width; ++X) {
-      /*
-        MEMORY ORDER:      RR GG BB xx
-        LOADED IN:         xx BB GG RR
-        WANTED:            xx RR GG BB
-        WIN MEMORY ORDER:  BB GG RR xx
-      */
-      uint8 Blue = (X + BlueOffest);
-      uint8 Green = (Y + GreenOffset);
-      // uint8 Red = 150;
-      *Pixel++ = (Green << 8) | Blue;
-    }
-    Row += Buffer->Pitch;
-    // Row = (uint8 *)Pixel; <-- also works
-  }
-}
-
-internal void 
-Win32ResizeDIBSection(win32_ofscreen_buffer *Buffer, int Width, int Height) {
+Win32ResizeDIBSection(win32_offscreen_buffer *Buffer, int Width, int Height) {
   // TODO: bulletproof this
   //  maybe dont free first, free after, then free first if that fails
 
@@ -223,7 +222,7 @@ Win32ResizeDIBSection(win32_ofscreen_buffer *Buffer, int Width, int Height) {
 }
 
 internal void 
-Win32DisplayBufferInWindow(win32_ofscreen_buffer *Buffer, HDC DeviceContext, int WindowWidth, int WindowHeight) {
+Win32DisplayBufferInWindow(win32_offscreen_buffer *Buffer, HDC DeviceContext, int WindowWidth, int WindowHeight) {
   // TODO: aspect ratio correction
   // TODO: learn what this function does
   StretchDIBits(
@@ -331,7 +330,7 @@ Win32MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
       Result = DefWindowProcA(Window, Message, WParam, LParam);
     } break;
   }
-  return(Result);
+  return Result;
 }
 
 internal void
@@ -364,7 +363,7 @@ Win32FillSoundBuffer(DWORD ByteToLock, DWORD BytesToWrite) {
   }
 }
 
-internal int CALLBACK 
+int CALLBACK 
 WinMain(
   HINSTANCE Instance, 
   HINSTANCE PrevInstance, 
@@ -468,8 +467,12 @@ WinMain(
             // diagnostics
           }
         }
-
-        RenderWeirdGradient(&GlobalBackBuffer, XOffset, YOffset);
+        game_offscreen_buffer GameBuffer = {};
+        GameBuffer.Memory = GlobalBackBuffer.Memory;
+        GameBuffer.Width = GlobalBackBuffer.Width;
+        GameBuffer.Height = GlobalBackBuffer.Height;
+        GameBuffer.Pitch = GlobalBackBuffer.Pitch;
+        GameUpdateAndRender(&GameBuffer, XOffset, YOffset);
         // direct sound output test
         // TODO: really understand how this works
         DWORD PlayCursor;
@@ -479,8 +482,6 @@ WinMain(
           DWORD TargetCursor = (PlayCursor + (GlobalSoundOutput.LatencySampleCount * GlobalSoundOutput.BytesPerSample)) % GlobalSoundOutput.SecondaryBufferSize;
           // we dont want to initialize this to 0
           DWORD BytesToWrite;
-          // TODO: change this to using a lower latency offset from the playcursor
-          // when we actually start having sound effects
           if (BytesToLock > TargetCursor) {
             BytesToWrite = GlobalSoundOutput.SecondaryBufferSize - BytesToLock + TargetCursor;
           }
@@ -529,5 +530,5 @@ WinMain(
     // TODO: logging
   }
 
-  return(0);
+  return 0;
 }
